@@ -15,28 +15,42 @@ use Symfony\Component\DependencyInjection\Loader;
 class AlgoliaAlgoliaSearchExtension extends Extension
 {
     /**
-     * {@inheritdoc}
+     * @param array            $configs
+     * @param ContainerBuilder $container
+     *
+     * @throws \Exception
      */
     public function load(array $configs, ContainerBuilder $container)
     {
+        $loader = new Loader\YamlFileLoader($container, new FileLocator(__DIR__.'/../Resources/config'));
+        $loader->load('services.yml');
+
         $configuration = new Configuration();
         $config = $this->processConfiguration($configuration, $configs);
 
-        if (isset($config['application_id'])) {
-            $container->setParameter('algolia.application_id', $config['application_id']);
+        $clientDefinition = $container->getDefinition('algolia.client');
+        $clientDefinition->replaceArgument(0, $config['application_id']);
+        $clientDefinition->replaceArgument(1, $config['api_key']);
+        if (null !== $config['connection_timeout']) {
+            $clientDefinition->addMethodCall('setConnectTimeout', ['connection_timeout']);
         }
 
-        if (isset($config['api_key'])) {
-            $container->setParameter('algolia.api_key', $config['api_key']);
+        if (null !== $config['index_name_prefix']) {
+            $container
+                ->getDefinition('algolia.indexer')
+                ->addMethodCall('setIndexNamePrefix', ['index_name_prefix']);
         }
 
-        $container->setParameter('algolia.catch_log_exceptions', $config['catch_log_exceptions']);
-        $container->setParameter('algolia.index_name_prefix', $config['index_name_prefix']);
-
-        $loader = new Loader\YamlFileLoader($container, new FileLocator(__DIR__.'/../Resources/config'));
-        $loader->load('services.yml');
+        if (null !== $config['catch_and_log_exceptions']) {
+            $container
+                ->getDefinition('algolia.indexer_subscriber')
+                ->addMethodCall('setCatchAndLogExceptions', ['catch_and_log_exceptions']);
+        }
     }
 
+    /**
+     * @return string
+     */
     public function getAlias()
     {
         return 'algolia';

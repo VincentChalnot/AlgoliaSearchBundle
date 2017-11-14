@@ -2,20 +2,38 @@
 
 namespace Algolia\AlgoliaSearchBundle\Indexer;
 
-use Doctrine\Common\Persistence\ObjectManager;
-use Doctrine\Common\Persistence\Proxy;
+use Algolia\AlgoliaSearchBundle\Mapping\IndexMetadata;
+use Algolia\AlgoliaSearchBundle\Mapping\Loader\LoaderInterface;
+use AlgoliaSearch\Client;
 use Doctrine\Common\Util\ClassUtils;
-use Doctrine\ODM\MongoDB\DocumentManager;
+use Doctrine\ORM\EntityManager;
 use Symfony\Component\PropertyAccess\PropertyAccess;
 
 use Algolia\AlgoliaSearchBundle\Exception\UnknownEntity;
 use Algolia\AlgoliaSearchBundle\Exception\NoPrimaryKey;
 use Algolia\AlgoliaSearchBundle\Exception\NotAnAlgoliaEntity;
-use Algolia\AlgoliaSearchBundle\Mapping\Loader\AnnotationLoader;
 use Algolia\AlgoliaSearchBundle\SearchResult\SearchResult;
 
+/**
+ * Takes care of indexing all the entities
+ */
 class Indexer
 {
+    /** @var Client */
+    protected $client;
+
+    /** @var EntityManager */
+    protected $em;
+
+    /** @var LoaderInterface */
+    protected $metadataLoader;
+
+    /** @var string */
+    protected $env;
+
+    /** @var string */
+    protected $indexNamePrefix;
+
     /**
      * Holds index settings for entities we're interested in.
      *
@@ -24,185 +42,154 @@ class Indexer
      *
      * Please see the documentation for MetaDataLoaderInterface::getMetaData
      * for more details.
+     *
+     * @var IndexMetadata[]
      */
-    private static $indexSettings = array();
+    protected $indexMetadatas = [];
 
-    /**
-     * The arrays below hold the entities we will sync with
-     * Algolia on postFlush.
-     */
-
-    // holds either naked entities or arrays of the form [
-    // 'entity' => $someEntity,
-    // 'indexName' => 'index name to override where the entity should normally go'
-    // ]
-
-    // holds arrays like ['entity' => $entity, 'changeSet' => $changeSet]
-    protected $entitiesScheduledForCreation = array();
-
-    // holds arrays like ['entity' => $entity, 'changeSet' => $changeSet]
-    protected $entitiesScheduledForUpdate = array();
-
-    // holds arrays like ['objectID' => 'aStringID', 'index' => 'anIndexName']
-    protected $entitiesScheduledForDeletion = array();
-
-    // Stores the current environment, this is injected by Symfo
-    // at service instanciation.
-    private $environment;
-
-    // Stores the current index name prefix, this is injected by Symfo
-    // at service instanciation.
-    private $indexNamePrefix;
-
-    /**
-     * The algolia application_id and api_key.
-     * Also injected for us by symfony from the config.
-     */
-    private $apiSettings = array();
-
-    private $client;
+    /** @var array */
+    protected $ignoredClasses = [];
 
     // Used to wait for sync, keys are index names
-    private $latestAlgoliaTaskID = array();
+    protected $latestAlgoliaTaskID = [];
 
     // Cache index objects from the php client lib
-    protected $indices = array();
+    protected $indices = [];
 
-    private $objectManager;
-
-    public function __construct()
-    {
+    /**
+     * @param Client          $client
+     * @param EntityManager   $em
+     * @param LoaderInterface $metadataLoader
+     * @param string          $env
+     */
+    public function __construct(
+        Client $client,
+        EntityManager $em,
+        LoaderInterface $metadataLoader,
+        string $env
+    ) {
         \AlgoliaSearch\Version::$custom_value = ' Symfony';
-    }
-
-    public function setObjectManager(ObjectManager $objectManager)
-    {
-        $this->objectManager = $objectManager;
-    }
-
-    public function getIndexSettings()
-    {
-        return self::$indexSettings;
+        $this->em = $em;
+        $this->metadataLoader = $metadataLoader;
+        $this->env = $env;
     }
 
     /**
+     * @param string $indexNamePrefix
+     *
      * @internal
-     * Used by the depency injection mechanism of Symfony
      */
-    public function setEnvironment($environment)
-    {
-        $this->environment = $environment;
-
-        return $this;
-    }
-
-    /**
-     * @param mixed $indexNamePrefix
-     */
-    public function setIndexNamePrefix($indexNamePrefix)
+    public function setIndexNamePrefix(string $indexNamePrefix)
     {
         $this->indexNamePrefix = $indexNamePrefix;
     }
 
-    public function setApiSettings($application_id, $api_key, $connection_timeout = null)
+    /**
+     * @return IndexMetadata[]
+     */
+    public function getIndexMetadatas(): array
     {
-        $this->apiSettings = [
-            'application_id' => $application_id,
-            'api_key' => $api_key,
-            'connection_timeout' => $connection_timeout,
-        ];
-
-        return $this;
+        return $this->indexMetadatas;
     }
 
     /**
-     * Right now this only returns a MetaDataAnnotationLoader,
-     * but this abstraction is provided to enable other loaders later.
-     * A loader just has to implement the Algolia\AlgoliaSearchBundle\MetaData\MetaDataLoaderInterface
-     * @return see MetaDataLoaderInterface
-     * @internal
+     * @param string $class
+     *
+     * @throws UnknownEntity
+     *
+     * @return IndexMetadata
      */
-    public function getMetaDataLoader()
+    public function getIndexMetadata(string $class)
     {
-        return new AnnotationLoader();
-    }
+        if (!$this->hasIndexMetadata($class)) {
+            throw new UnknownEntity("No entity class `{$class}` in metadata index");
+        }
 
-    private function getClass($entity)
-    {
-        $class = get_class($entity);
-        $class = ClassUtils::getRealClass($class);
-
-        return $class;
+        return $this->indexMetadatas[$class];
     }
 
     /**
      * This function does 2 things at once for efficiency:
      * - return a simple boolean telling us whether or not there might be
-     *   indexing work to do with this entity
-     * - extract, and store for later, the index settings for the entity
+     *   indexing work to do with this entity class
+     * - extract, and store for later, the index settings for the entity class
      *   if we're interested in indexing it
-     * @param  $entity
+     *
+     * @param string $class
+     *
      * @return bool
-     * @internal
      */
-    public function discoverEntity($entity_or_class, ObjectManager $objectManager)
+    public function hasIndexMetadata(string $class)
     {
-        if (is_object($entity_or_class)) {
-            $entity = $entity_or_class;
-            $class = $this->getClass($entity);
-        } else {
-            $class = $objectManager->getRepository($entity_or_class)->getClassName();
-            $reflClass = new \ReflectionClass($class);
-
-            if ($reflClass->isAbstract()) {
-                return false;
-            }
-
-            $entity = $reflClass->newInstanceWithoutConstructor();
+        if ($this->isIgnoredClass($class)) {
+            return false;
         }
 
-        // check if we already saw this type of entity
-        // to avoid some expensive work
-        if (!array_key_exists($class, self::$indexSettings)) {
-            self::$indexSettings[$class] = $this->getMetaDataLoader()->getMetaData($entity, $objectManager);
+        if ($this->hasComputedMetadata($class)) {
+            return true;
         }
 
-        return false !== self::$indexSettings[$class];
+        $metadata = $this->metadataLoader->getMetaData($class);
+        if (false === $metadata) {
+            $this->addIgnoredClass($class);
+
+            return false;
+        }
+
+        $this->indexMetadatas[$class] = $metadata;
+
+        return true;
     }
 
     /**
-     * Tells us whether we need to autoindex this entity.
-     * @internal
+     * Only test already built index metadata
+     *
+     * @param string $class
+     *
+     * @return bool
      */
-    public function autoIndex($entity, ObjectManager $objectManager)
+    protected function hasComputedMetadata(string $class)
     {
-        $this->objectManager = $objectManager;
+        return array_key_exists($class, $this->indexMetadatas);
+    }
 
-        if (!$this->discoverEntity($entity, $objectManager)) {
-            return false;
-        } else {
-            return self::$indexSettings[$this->getClass($entity)]->getIndex()->getAutoIndex();
-        }
+    /**
+     * @param string $class
+     *
+     * @return bool
+     */
+    protected function isIgnoredClass(string $class)
+    {
+        return \in_array($class, $this->ignoredClasses, true);
+    }
+
+    /**
+     * @param string $class
+     */
+    protected function addIgnoredClass(string $class)
+    {
+        $this->ignoredClasses[] = $class;
     }
 
     /**
      * Determines whether the IndexIf conditions allow indexing this entity.
      * If a changeSet is specified, returns array($shouldBeIndexedNow, $wasIndexedBefore),
      * Otherwise just returns whether it should be indexed now.
-     * @internal
+     *
+     * @param object     $entity
+     * @param array|null $changeSet
+     *
+     * @throws \Algolia\AlgoliaSearchBundle\Exception\UnknownEntity
+     *
+     * @return array|bool
      */
-    private function shouldIndex($entity, array $changeSet = null)
+    protected function shouldIndex(object $entity, array $changeSet = null)
     {
-        $class = $this->getClass($entity);
-
         $needsIndexing = true;
         $wasIndexed = true;
+        $indexMetadata = $this->getIndexMetadata(ClassUtils::getClass($entity));
 
-        if ($this->isEmbeddedObject($entity)) {
-            return false;
-        }
-
-        foreach (self::$indexSettings[$class]->getIndexIfs() as $if) {
+        foreach ($indexMetadata->getIndexIfs() as $if) {
             if (null === $changeSet) {
                 if (!$if->evaluate($entity)) {
                     return false;
@@ -214,18 +201,26 @@ class Indexer
             }
         }
 
-        return null === $changeSet ? true : array($needsIndexing, $wasIndexed);
+        return null === $changeSet ? true : [$needsIndexing, $wasIndexed];
     }
 
     /**
      * Determines whether the IndexIf conditions allowed the entity
      * to be indexed when the entity had the internal values provided
      * in the $originalData array.
-     * @internal
+     *
+     * @param object $entity
+     * @param array  $originalData
+     *
+     * @throws \Algolia\AlgoliaSearchBundle\Exception\UnknownEntity
+     *
+     * @return bool
      */
-    private function shouldHaveBeenIndexed($entity, array $originalData)
+    protected function shouldHaveBeenIndexed(object $entity, array $originalData)
     {
-        foreach (self::$indexSettings[$this->getClass($entity)]->getIndexIfs() as $if) {
+        $indexMetadata = $this->getIndexMetadata(ClassUtils::getClass($entity));
+
+        foreach ($indexMetadata->getIndexIfs() as $if) {
             if (!$if->evaluateWith($entity, $originalData)) {
                 return false;
             }
@@ -234,112 +229,51 @@ class Indexer
         return true;
     }
 
-    /**
-     * @internal
-     */
-    public function scheduleEntityCreation($entity, $checkShouldIndex = true)
-    {
-        if ($checkShouldIndex && !$this->shouldIndex(is_object($entity) ? $entity : $entity['entity'])) {
-            return;
-        }
-
-        // We store the whole entity, because its ID will not be available until post-flush
-        $this->entitiesScheduledForCreation[] = $entity;
-    }
-
-    /**
-     * @internal
-     */
-    public function scheduleEntityUpdate($entity, array $changeSet)
-    {
-        list($shouldIndex, $wasIndexed) = $this->shouldIndex($entity, $changeSet);
-
-        if ($shouldIndex) {
-            if ($wasIndexed) {
-                // We need to store the changeSet now, as it will not be available post-flush
-                $this->entitiesScheduledForUpdate[] = array('entity' => $entity, 'changeSet' => $changeSet);
-            } else {
-                $this->scheduleEntityCreation($entity, ($checkShouldIndex = false));
-            }
-        } elseif ($wasIndexed) {
-            // If the entity was indexed, and now should not be, then remove it.
-            $this->scheduleEntityDeletion($entity, null);
-        }
-    }
-
-    /**
-     * @internal
-     */
-    public function scheduleEntityDeletion($entity, array $originalData = null)
-    {
-        // Don't unindex entities that were not already indexed!
-        if (null !== $originalData && !$this->shouldHaveBeenIndexed($entity, $originalData)) {
-            return;
-        }
-
-        if ($this->isEmbeddedObject($entity)) {
-            return;
-        }
-
-        // We need to get the primary key now, because post-flush it will be gone from the entity
-        list($primaryKey, $unusedOldPrimaryKey) = $this->getPrimaryKeyForAlgolia($entity);
-        $this->entitiesScheduledForDeletion[] = array(
-            'objectID' => $primaryKey,
-            'index' => $this->getAlgoliaIndexName($entity)
-        );
-    }
-
-
-    public function isEntity(ObjectManager $objectManager, $class)
-    {
-        if (is_object($class)) {
-            $class = ($class instanceof Proxy)
-                ? get_parent_class($class)
-                : get_class($class);
-        }
-
-        return ! $objectManager->getMetadataFactory()->isTransient($class);
-    }
-
-    private function extractPropertyValue($entity, $field, $depth)
+    protected function extractPropertyValue(object $entity, $field, $depth)
     {
         $accessor = PropertyAccess::createPropertyAccessor();
         $value = $accessor->getValue($entity, $field);
 
         if ($value instanceof \Doctrine\Common\Collections\Collection) {
-            if ($depth >= 2 && !$this->isEmbeddedObject($entity)) {
+            if ($depth >= 2) {
                 return null;
             }
 
             $value = $value->toArray();
 
-            if (count($value) > 0) {
-                if (! $this->discoverEntity(reset($value), $this->objectManager)) {
+            if (\count($value) > 0) {
+                if (!$this->discoverEntity(reset($value), $this->em)) {
                     throw new NotAnAlgoliaEntity(
-                        'Tried to index `'.$field.'` relation which is a `'.get_class(reset($value)).'` instance, which is not recognized as an entity to index.'
+                        'Tried to index `'.$field.'` relation which is a `'.\get_class(
+                            reset($value)
+                        ).'` instance, which is not recognized as an entity to index.'
                     );
                 }
             }
 
-            $value = array_map(function ($val) use ($depth) {
-                return $this->getFieldsForAlgolia($val, null, $depth + 1);
-            }, $value);
+            $value = array_map(
+                function ($val) use ($depth) {
+                    return $this->getFieldsForAlgolia($val, null, $depth + 1);
+                },
+                $value
+            );
         }
 
-        if (is_object($value) && $this->isEntity($this->objectManager, $value)) {
-            if ($depth >= 2 && !$this->isEmbeddedObject($entity)) {
+        if (\is_object($value) && $this->isEntity($this->em, $value)) {
+            if ($depth >= 2) {
                 return null;
             }
 
-            if (! $this->discoverEntity($value, $this->objectManager)) {
+            if (!$this->discoverEntity($value, $this->em)) {
                 throw new NotAnAlgoliaEntity(
-                    'Tried to index `'.$field.'` relation which is a `'.get_class($value).'` instance, which is not recognized as an entity to index.'
+                    'Tried to index `'.$field.'` relation which is a `'.\get_class(
+                        $value
+                    ).'` instance, which is not recognized as an entity to index.'
                 );
             }
 
             $value = $this->getFieldsForAlgolia($value, null, $depth + 1);
         }
-
 
 
         return $value;
@@ -360,14 +294,14 @@ class Indexer
 
         $changed = false;
 
-        $oldPrimaryKeyValues = array();
-        $newPrimaryKeyValues = array();
+        $oldPrimaryKeyValues = [];
+        $newPrimaryKeyValues = [];
 
         foreach (self::$indexSettings[$class]->getIdentifierFieldNames() as $fieldName) {
             $old = null;
             $new = null;
 
-            if (is_array($changeSet) && array_key_exists($fieldName, $changeSet)) {
+            if (\is_array($changeSet) && array_key_exists($fieldName, $changeSet)) {
                 $old = $changeSet[$fieldName][0];
                 $new = $changeSet[$fieldName][1];
                 $changed = true;
@@ -388,7 +322,7 @@ class Indexer
         $primaryKey = $this->serializePrimaryKey($newPrimaryKeyValues);
         $oldPrimaryKey = $changed ? $this->serializePrimaryKey($oldPrimaryKeyValues) : null;
 
-        return array($primaryKey, $oldPrimaryKey);
+        return [$primaryKey, $oldPrimaryKey];
     }
 
     /**
@@ -423,10 +357,12 @@ class Indexer
         $class = $this->getClass($entity);
 
         if (!isset(self::$indexSettings[$class])) {
-            throw new UnknownEntity("Entity of class `$class` is not known to Algolia. This is likely an implementation bug.");
+            throw new UnknownEntity(
+                "Entity of class `$class` is not known to Algolia. This is likely an implementation bug."
+            );
         }
 
-        $fields = array();
+        $fields = [];
 
         // Get fields coming from properties
         foreach (self::$indexSettings[$class]->getProperties() as $prop) {
@@ -446,7 +382,7 @@ class Indexer
      */
     public function getAlgoliaIndexName($entity_or_class)
     {
-        $class = is_object($entity_or_class) ? $this->getClass($entity_or_class) : $entity_or_class;
+        $class = \is_object($entity_or_class) ? $this->getClass($entity_or_class) : $entity_or_class;
 
         if (!isset(self::$indexSettings[$class])) {
             throw new UnknownEntity("Entity $class is not known to Algolia. This is likely an implementation bug.");
@@ -456,92 +392,16 @@ class Indexer
         $indexName = $index->getAlgoliaName();
 
         if (!empty($this->indexNamePrefix)) {
-            $indexName = $this->indexNamePrefix . '_' . $indexName;
+            $indexName = $this->indexNamePrefix.'_'.$indexName;
         }
 
-        if ($index->getPerEnvironment() && $this->environment) {
-            $indexName .= '_'.$this->environment;
+        if ($index->getPerEnvironment() && $this->env) {
+            $indexName .= '_'.$this->env;
         }
 
         return $indexName;
     }
 
-    /**
-     * @internal
-     */
-    public function processScheduledIndexChanges()
-    {
-        $creations = array();
-        $updates = array();
-        $deletions = array();
-
-        foreach ($this->entitiesScheduledForCreation as $entity) {
-            if (is_object($entity)) {
-                $index = $this->getAlgoliaIndexName($entity);
-            } else {
-                $index = $entity['indexName'];
-                $entity = $entity['entity'];
-            }
-
-            list($primaryKey, $unusedOldPrimaryKey) = $this->getPrimaryKeyForAlgolia($entity);
-            $fields = $this->getFieldsForAlgolia($entity);
-
-            if (!empty($fields)) {
-                if (!isset($creations[$index])) {
-                    $creations[$index] = array();
-                }
-                $fields['objectID'] = $primaryKey;
-                $creations[$index][] = $fields;
-            }
-        }
-
-        foreach ($this->entitiesScheduledForUpdate as $data) {
-            $index = $this->getAlgoliaIndexName($data['entity']);
-
-            list($primaryKey, $oldPrimaryKey) = $this->getPrimaryKeyForAlgolia($data['entity'], $data['changeSet']);
-
-            // The very unlikely case where a primary key changed
-            if (null !== $oldPrimaryKey) {
-                if (!isset($deletions[$index])) {
-                    $deletions[$index] = array();
-                }
-                $deletions[$index][] = $oldPrimaryKey;
-
-                $fields = $this->getFieldsForAlgolia($data['entity'], null);
-                $fields['objectID'] = $primaryKey;
-
-                if (!isset($creations[$index])) {
-                    $creations[$index] = array();
-                }
-                $creations[$index][] = $fields;
-            } else {
-                $fields = $this->getFieldsForAlgolia($data['entity'], $data['changeSet']);
-
-                if (!empty($fields)) {
-                    if (!isset($updates[$index])) {
-                        $updates[$index] = array();
-                    }
-                    $fields['objectID'] = $primaryKey;
-                    $updates[$index][] = $fields;
-                }
-            }
-        }
-
-        foreach ($this->entitiesScheduledForDeletion as $data) {
-            $index = $data['index'];
-
-            if (!isset($deletions[$index])) {
-                $deletions[$index] = array();
-            }
-            $deletions[$index][] = $data['objectID'];
-        }
-
-        $this->performBatchCreations($creations);
-        $this->performBatchUpdates($updates);
-        $this->performBatchDeletions($deletions);
-
-        $this->removeScheduledIndexChanges();
-    }
 
     /**
      * Keep track of a remote task to be able to wait for it later.
@@ -560,7 +420,7 @@ class Indexer
             if (!isset($this->latestAlgoliaTaskID[$indexName]) || $res['taskID'] > $this->latestAlgoliaTaskID[$indexName]['taskID']) {
                 $this->latestAlgoliaTaskID[$indexName] = [
                     'index' => $this->getIndex($indexName),
-                    'taskID' => $res['taskID']
+                    'taskID' => $res['taskID'],
                 ];
             }
         }
@@ -571,6 +431,7 @@ class Indexer
     /**
      * This function does creations or updates - it sends full resources,
      * whether new or updated.
+     *
      * @internal
      */
     protected function performBatchCreations(array $creations)
@@ -586,6 +447,7 @@ class Indexer
     /**
      * This function does updates in the sense of PATCHes,
      * i.e. it handles deltas.
+     *
      * @internal
      */
     protected function performBatchUpdates(array $updates)
@@ -600,6 +462,7 @@ class Indexer
 
     /**
      * This performs deletions, no trick here.
+     *
      * @internal
      */
     protected function performBatchDeletions(array $deletions)
@@ -617,16 +480,16 @@ class Indexer
      */
     public function removeScheduledIndexChanges()
     {
-        $this->entitiesScheduledForCreation = array();
-        $this->entitiesScheduledForUpdate = array();
-        $this->entitiesScheduledForDeletion = array();
+        $this->entitiesScheduledForCreation = [];
+        $this->entitiesScheduledForUpdate = [];
+        $this->entitiesScheduledForDeletion = [];
 
         return $this;
     }
 
-    public function getManualIndexer(ObjectManager $em)
+    public function getManualIndexer()
     {
-        return new ManualIndexer($this, $em);
+        return new ManualIndexer($this, $this->em); // @todo refactor using dependency injection
     }
 
     /**
@@ -635,26 +498,13 @@ class Indexer
      */
     public function getClient()
     {
-        if (!$this->client) {
-            $this->client = new \AlgoliaSearch\Client(
-                $this->apiSettings['application_id'],
-                $this->apiSettings['api_key']
-            );
-
-            if (isset($this->apiSettings['connection_timeout'])) {
-                $this->client->setConnectTimeout(
-                    $this->apiSettings['connection_timeout']
-                );
-            }
-        }
-
-
         return $this->client;
     }
 
     /**
      * Returns an object used to communicate with the Algolia indexes
      * and caches it.
+     *
      * @internal
      */
     public function getIndex($indexName)
@@ -670,12 +520,13 @@ class Indexer
      * Add the correct environment suffix to an index name,
      * this is primarily used by rawSearch as in rawSearch we don't want
      * the user to bother about knowing the environment he's on.
+     *
      * @internal
      */
     public function makeEnvIndexName($indexName, $perEnvironment)
     {
         if ($perEnvironment) {
-            return $indexName . '_' . $this->environment;
+            return $indexName.'_'.$this->env;
         } else {
             return $indexName;
         }
@@ -685,20 +536,24 @@ class Indexer
      * Performs a raw search in the Algolia indexes, i.e. will not involve
      * the local DB at all, and only return what's indexed on Algolia's servers.
      *
-     * @param  string       $indexName   The name of the index to search from.
-     * @param  string       $queryString The query string.
-     * @param  array        $options     Any search option understood by https://github.com/algolia/algoliasearch-client-php, plus:
-     *                                   - perEnvironment: automatically suffix the index name with the environment, defaults to true
-     *                                   - adaptIndexName: transform the index name as needed (e.g. add environment suffix), defaults to true.
-     *                                   This option is here because sometimes we already have the suffixed index name, so calling rawSearch with
-     *                                   adaptIndexName = false ensures we end up with the correct Algolia index name.
+     * @param  string $indexName         The name of the index to search from.
+     * @param  string $queryString       The query string.
+     * @param  array  $options           Any search option understood by
+     *                                   https://github.com/algolia/algoliasearch-client-php, plus:
+     *                                   - perEnvironment: automatically suffix the index name with the environment,
+     *                                   defaults to true
+     *                                   - adaptIndexName: transform the index name as needed (e.g. add environment
+     *                                   suffix), defaults to true. This option is here because sometimes we already
+     *                                   have the suffixed index name, so calling rawSearch with adaptIndexName = false
+     *                                   ensures we end up with the correct Algolia index name.
+     *
      * @return SearchResult The results returned by Algolia. The `isHydrated` method of the result will return false.
      */
-    public function rawSearch($indexName, $queryString, array $options = array())
+    public function rawSearch($indexName, $queryString, array $options = [])
     {
         $defaultOptions = [
             'perEnvironment' => true,
-            'adaptIndexName' => true
+            'adaptIndexName' => true,
         ];
 
         $options = array_merge($defaultOptions, $options);
@@ -723,13 +578,16 @@ class Indexer
      * 'Native' means that once the results are retrieved, they will be fetched from the local DB
      * and replaced with native ORM entities.
      *
-     * @param  ObjectManager $em          The Doctrine Entity Manager to use to fetch entities when hydrating the results.
+     * @param  EntityManager $em          The Doctrine Entity Manager to use to fetch entities when hydrating the
+     *                                    results.
      * @param  string        $indexName   The name of the index to search from.
      * @param  string        $queryString The query string.
-     * @param  array         $options     Any search option understood by https://github.com/algolia/algoliasearch-client-php
+     * @param  array         $options     Any search option understood by
+     *                                    https://github.com/algolia/algoliasearch-client-php
+     *
      * @return SearchResult  The results returned by Algolia. The `isHydrated` method of the result will return true.
      */
-    public function search(ObjectManager $em, $entityName, $queryString, array $options = array())
+    public function search(EntityManager $em, $entityName, $queryString, array $options = [])
     {
         $entityClass = $em->getRepository($entityName)->getClassName();
 
@@ -762,11 +620,11 @@ class Indexer
     /**
      * @internal
      */
-    public function deleteIndex($indexName, array $options = array())
+    public function deleteIndex($indexName, array $options = [])
     {
         $defaultOptions = [
             'perEnvironment' => true,
-            'adaptIndexName' => true
+            'adaptIndexName' => true,
         ];
 
         $options = array_merge($defaultOptions, $options);
@@ -792,11 +650,11 @@ class Indexer
     /**
      * @internal
      */
-    public function setIndexSettings($indexName, array $settings, array $options = array())
+    public function setIndexSettings($indexName, array $settings, array $options = [])
     {
         $defaultOptions = [
             'perEnvironment' => true,
-            'adaptIndexName' => true
+            'adaptIndexName' => true,
         ];
 
         $options = array_merge($defaultOptions, $options);
@@ -826,19 +684,5 @@ class Indexer
         }
 
         return $this;
-    }
-
-    /**
-     * @param $entity
-     * @return bool
-     */
-    private function isEmbeddedObject($entity)
-    {
-        if (! $this->objectManager instanceof DocumentManager) {
-            return false;
-        }
-
-        $classMetadata = $this->objectManager->getClassMetadata($this->getClass($entity));
-        return $classMetadata->isEmbeddedDocument;
     }
 }

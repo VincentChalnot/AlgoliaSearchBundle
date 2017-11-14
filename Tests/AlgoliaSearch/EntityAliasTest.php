@@ -1,17 +1,18 @@
 <?php
 
-namespace Algolia\AlgoliaSearchBundle\Tests\AlgoliaSearch;
+namespace Algolia\AlgoliaSearchBundle\Tests;
 
-use Algolia\AlgoliaSearchBundle\Tests\BaseTest;
-use Algolia\AlgoliaSearchBundle\Tests\Entity;
-
-abstract class EntityAliasTest extends BaseTest
+class EntityAliasTest extends BaseTest
 {
     /**
      * Here we really want to test the full integration
      * and talk with Algolia servers.
      */
     public static $isolateFromAlgolia = false;
+
+    public static $neededEntityTypes = [
+        'ProductForAlgoliaIntegrationTest'
+    ];
 
     public function setUp()
     {
@@ -43,7 +44,7 @@ abstract class EntityAliasTest extends BaseTest
         $this->getIndexer()->waitForAlgoliaTasks();
 
         $result = $this->getIndexer()->search(
-            $this->getObjectManager(),
+            $this->getEntityManager(),
             'AlgoliaSearchBundle:ProductForAlgoliaIntegrationTest',
             'My First Product'
         );

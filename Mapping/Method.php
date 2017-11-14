@@ -4,7 +4,7 @@ namespace Algolia\AlgoliaSearchBundle\Mapping;
 
 class Method extends Helper\ChangeAwareMethod
 {
-    private $algoliaName;
+    protected $algoliaName;
 
     public function setAlgoliaName($algoliaName)
     {

@@ -1,19 +1,19 @@
 <?php
 
-namespace Algolia\AlgoliaSearchBundle\Tests\AlgoliaSearch;
+namespace Algolia\AlgoliaSearchBundle\Tests;
 
-use Algolia\AlgoliaSearchBundle\Tests\BaseTest;
-use Algolia\AlgoliaSearchBundle\Tests\Entity;
-
-abstract class CallbacksTest extends BaseTest
+class CallbacksTest extends BaseTest
 {
+    public static $neededEntityTypes = [
+        'Product',
+        'Supplier'
+    ];
+
+    // Just to be sure we did not mess something up in our namespaces
     public function testOurEntitiesExist()
     {
-        $product = new Entity\Product();
-        $this->assertInstanceOf('Algolia\AlgoliaSearchBundle\Tests\Entity\Product', $product);
-
-        $supplier = new Entity\Supplier();
-        $this->assertInstanceOf('Algolia\AlgoliaSearchBundle\Tests\Entity\Supplier', $supplier);
+        new Entity\Product();
+        new Entity\Supplier();
     }
 
     public function testCreateUpdateDeleteCallbacksAreCalled()

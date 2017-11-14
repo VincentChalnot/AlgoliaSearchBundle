@@ -1,15 +1,14 @@
 <?php
 
-namespace Algolia\AlgoliaSearchBundle\Tests\AlgoliaSearch;
+namespace Algolia\AlgoliaSearchBundle\Tests;
 
-use Algolia\AlgoliaSearchBundle\Command\ReindexCommand;
-use Algolia\AlgoliaSearchBundle\Tests\BaseTest;
-use Algolia\AlgoliaSearchBundle\Tests\Entity;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Component\Console\Output\ConsoleOutput;
 use Symfony\Component\Console\Input\ArrayInput;
 
-abstract class ReindexCommandTest extends BaseTest
+use Algolia\AlgoliaSearchBundle\Command\ReindexCommand;
+
+class ReindexCommandTest extends BaseTest
 {
     /**
      * Here we really want to test the full integration
@@ -17,15 +16,17 @@ abstract class ReindexCommandTest extends BaseTest
      */
     public static $isolateFromAlgolia = false;
 
-    public static $nProducts = 30;
+    public static $neededEntityTypes = [
+        'ProductForReindexTest'
+    ];
 
-    abstract protected function getCommandOptions();
+    public static $nProducts = 30;
 
     public static function setUpBeforeClass()
     {
         parent::setUpBeforeClass();
 
-        $em = static::staticGetObjectManager();
+        $em = static::staticGetEntityManager();
 
         // Setup our fixtures
         for ($i = 0; $i < static::$nProducts; $i += 1) {
@@ -71,7 +72,7 @@ abstract class ReindexCommandTest extends BaseTest
             'Algolia\AlgoliaSearchBundle\Tests\Entity\ProductForReindexTest'
         ;
 
-        $options = $this->getCommandOptions() + [
+        $options = [
             'entityName' => $entityName,
             '--batch-size' => 8, // not a divisor of static::$nProducts, on purpose
             '--sync' => ' '

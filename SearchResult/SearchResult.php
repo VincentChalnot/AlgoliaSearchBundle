@@ -4,9 +4,9 @@ namespace Algolia\AlgoliaSearchBundle\SearchResult;
 
 class SearchResult
 {
-    private $originalResult;
-    private $hydrated;
-    private $maybeHydratedHits;
+    protected $originalResult;
+    protected $hydrated;
+    protected $maybeHydratedHits;
 
     public function __construct(array $result, array $hydratedHits = null)
     {
@@ -29,9 +29,9 @@ class SearchResult
     {
         if ($this->isHydrated()) {
             return $this->maybeHydratedHits;
+        } else {
+            return $this->originalResult['hits'];
         }
-
-        return $this->originalResult['hits'];
     }
 
     public function getHit($n)

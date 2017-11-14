@@ -2,55 +2,60 @@
 
 namespace Algolia\AlgoliaSearchBundle\Command;
 
-use Doctrine\Common\Persistence\Mapping\ClassMetadata;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
-class ReindexCommand extends AlgoliaCommand
+/**
+ * Reindex all entities or just those of a specified type.
+ */
+class ReindexCommand extends AbstractCommand
 {
+    /**
+     * {@inheritdoc}
+     *
+     * @throws \Symfony\Component\Console\Exception\InvalidArgumentException
+     */
     protected function configure()
     {
-        parent::configure();
-
         $this
             ->setName('algolia:reindex')
             ->setDescription('Reindex all entities or just those of a specified type.')
-            ->addArgument('entityName', InputArgument::OPTIONAL, 'Which type of entity do you want to reindex? If not set, all is assumed.')
+            ->addArgument(
+                'entityName',
+                InputArgument::OPTIONAL,
+                'Which type of entity do you want to reindex? If not set, all is assumed.'
+            )
             ->addOption('unsafe', null, InputOption::VALUE_NONE, 'Index inplace, without deleting out-dated records.')
-            ->addOption('batch-size', null, InputOption::VALUE_REQUIRED, 'Specify a batch size for the reindexing operation.', 1000)
-            ->addOption('sync', null, InputOption::VALUE_NONE, 'Wait for operations to complete before returning.')
-        ;
+            ->addOption(
+                'batch-size',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Specify a batch size for the reindexing operation.',
+                1000
+            )
+            ->addOption('sync', null, InputOption::VALUE_NONE, 'Wait for operations to complete before returning.');
     }
 
-    protected function getObjectClasses()
-    {
-        $metaData = $this->getObjectManager()
-            ->getMetadataFactory()
-            ->getAllMetadata();
-
-        return array_map(
-            function (ClassMetadata $data) {
-                return $data->getName();
-            },
-            $metaData
-        );
-    }
-
+    /**
+     * @param InputInterface  $input
+     * @param OutputInterface $output
+     *
+     * @throws \Exception
+     *
+     * @return int|null|void
+     */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
-        $this->setObjectManagerFromInput($input);
-
         $toReindex = [];
 
+        $filter = null;
         if ($input->getArgument('entityName')) {
-            $filter = $this->getObjectManager()->getRepository($input->getArgument('entityName'))->getClassName();
-        } else {
-            $filter = null;
+            $filter = $this->getEntityManager()->getRepository($input->getArgument('entityName'))->getClassName();
         }
 
-        foreach ($this->getObjectClasses() as $class) {
+        foreach ($this->getEntityClasses() as $class) {
             if (!$filter || $class === $filter) {
                 $toReindex[] = $class;
             }
@@ -86,14 +91,28 @@ class ReindexCommand extends AlgoliaCommand
         }
     }
 
-    public function reIndex($className, $batchSize = 1000, $safe = true)
+    /**
+     * @param      $className
+     * @param int  $batchSize
+     * @param bool $safe
+     *
+     * @throws \Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException
+     * @throws \Symfony\Component\DependencyInjection\Exception\ServiceCircularReferenceException
+     * @throws \LogicException
+     *
+     * @return int
+     */
+    protected function reIndex($className, $batchSize = 1000, $safe = true)
     {
-        $reIndexer = $this->getContainer()->get('algolia.indexer')->getManualIndexer($this->getObjectManager());
+        $reIndexer = $this->getContainer()->get('algolia.indexer')->getManualIndexer($this->getEntityManager());
 
-        return $reIndexer->reIndex($className, [
-            'batchSize' => $batchSize,
-            'safe' => $safe,
-            'clearEntityManager' => true,
-        ]);
+        return $reIndexer->reIndex(
+            $className,
+            [
+                'batchSize' => $batchSize,
+                'safe' => $safe,
+                'clearEntityManager' => true,
+            ]
+        );
     }
 }

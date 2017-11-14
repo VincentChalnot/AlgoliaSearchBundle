@@ -6,7 +6,10 @@ use Doctrine\ORM\Mapping as ORM;
 use Algolia\AlgoliaSearchBundle\Mapping\Annotation as Algolia;
 
 /**
+ * Product
+ *
  * @ORM\Entity
+ *
  */
 class ProductWithCompositePrimaryKey extends BaseTestAwareEntity
 {

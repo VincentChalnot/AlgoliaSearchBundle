@@ -4,7 +4,7 @@ namespace Algolia\AlgoliaSearchBundle\Tests\Entity;
 
 class BaseTestAwareEntity
 {
-    private $test_props = array();
+    protected $test_props = array();
 
     public function setTestProp($prop, $value)
     {

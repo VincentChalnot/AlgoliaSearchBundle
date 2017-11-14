@@ -4,7 +4,7 @@ namespace Algolia\AlgoliaSearchBundle\Mapping\Helper;
 
 class ChangeAwareMethod
 {
-    private $name;
+    protected $name;
 
     public function setName($name)
     {
@@ -20,7 +20,7 @@ class ChangeAwareMethod
 
     /**
      * This function violates all OOP design practices
-     * by setting private properties of an external object.
+     * by setting protected properties of an external object.
      *
      * Well done, PHP :) http://php.net/manual/fr/closure.bind.php
      *
@@ -28,7 +28,7 @@ class ChangeAwareMethod
      * And this is far more efficient than using a ReflectionClass:
      * http://ocramius.github.io/blog/accessing-private-php-class-members-without-reflection/
      */
-    private function fillWith($entity, array $data)
+    protected function fillWith($entity, array $data)
     {
         $privateSetter = \Closure::bind(function () use ($data) {
             foreach ($data as $key => $value) {

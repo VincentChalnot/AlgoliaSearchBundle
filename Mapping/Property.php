@@ -4,8 +4,8 @@ namespace Algolia\AlgoliaSearchBundle\Mapping;
 
 class Property
 {
-    private $name;
-    private $algoliaName;
+    protected $name;
+    protected $algoliaName;
 
     public function setName($name)
     {

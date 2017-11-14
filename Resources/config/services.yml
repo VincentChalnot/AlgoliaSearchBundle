@@ -1,32 +1,25 @@
-parameters:
-    algolia.indexer.class: Algolia\AlgoliaSearchBundle\Indexer\Indexer
-    algolia.connection_timeout: ~
-    algolia.indexer_subscriber.orm.class: Algolia\AlgoliaSearchBundle\EventListener\AlgoliaSearchDoctrineORMEventSubscriber
-    algolia.indexer_subscriber.mongodb_odm.class: Algolia\AlgoliaSearchBundle\EventListener\AlgoliaSearchDoctrineMongoDBODMEventSubscriber
-
 services:
-    algolia.indexer:
-        class: "%algolia.indexer.class%"
-        calls:
-            - [setEnvironment, ["%kernel.environment%"]]
-            - [setIndexNamePrefix, ["%algolia.index_name_prefix%"]]
-            - [setApiSettings, ["%algolia.application_id%", "%algolia.api_key%", "%algolia.connection_timeout%"]]
-
-    algolia.indexer_subscriber.abstract:
-        abstract: true
+    algolia.client:
+        class: AlgoliaSearch\Client
         arguments:
-            - "@algolia.indexer"
-            - "%algolia.catch_log_exceptions%"
-            - "@?logger"
+            - ~ # Injected by configuration
+            - ~ # Injected by configuration
 
-    algolia.indexer_subscriber.orm:
-        parent: algolia.indexer_subscriber.abstract
-        class: "%algolia.indexer_subscriber.orm.class%"
-        tags:
-            - {name: doctrine.event_subscriber}
+    algolia.metadata_loader:
+        class: Algolia\AlgoliaSearchBundle\Mapping\Loader\AnnotationLoader
 
-    algolia.indexer_subscriber.mongodb_odm:
-        parent: algolia.indexer_subscriber.abstract
-        class: "%algolia.indexer_subscriber.mongodb_odm.class%"
+    algolia.indexer:
+        class: Algolia\AlgoliaSearchBundle\Indexer\Indexer
+        arguments:
+            - '@algolia.client'
+            - '@doctrine.orm.entity_manager'
+            - '@algolia.metadata_loader'
+            - '%kernel.environment%'
+
+    algolia.indexer_subscriber:
+        class: Algolia\AlgoliaSearchBundle\EventListener\AlgoliaSearchDoctrineEventSubscriber
+        arguments:
+            - '@algolia.indexer'
+            - '@?logger'
         tags:
-            - {name: doctrine_mongodb.odm.event_subscriber}
+            - { name: doctrine.event_subscriber }

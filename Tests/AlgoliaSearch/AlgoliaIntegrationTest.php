@@ -1,17 +1,18 @@
 <?php
 
-namespace Algolia\AlgoliaSearchBundle\Tests\AlgoliaSearch;
+namespace Algolia\AlgoliaSearchBundle\Tests;
 
-use Algolia\AlgoliaSearchBundle\Tests\BaseTest;
-use Algolia\AlgoliaSearchBundle\Tests\Entity;
-
-abstract class AlgoliaIntegrationTest extends BaseTest
+class AlgoliaIntegrationTest extends BaseTest
 {
     /**
      * Here we really want to test the full integration
      * and talk with Algolia servers.
      */
     public static $isolateFromAlgolia = false;
+
+    public static $neededEntityTypes = [
+        'ProductForAlgoliaIntegrationTest'
+    ];
 
     public function tearDown()
     {
@@ -114,10 +115,10 @@ abstract class AlgoliaIntegrationTest extends BaseTest
             ->setPrice(1 + $i)
             ->setRating($i);
 
-            $this->getObjectManager()->persist($product);
+            $this->getEntityManager()->persist($product);
         }
 
-        $this->getObjectManager()->flush();
+        $this->getEntityManager()->flush();
         $this->getIndexer()->waitForAlgoliaTasks();
 
         $results = $this->getIndexer()->rawSearch('ProductForAlgoliaIntegrationTest', 'Product Number');
@@ -149,7 +150,7 @@ abstract class AlgoliaIntegrationTest extends BaseTest
         $this->getIndexer()->waitForAlgoliaTasks();
 
         $results = $this->getIndexer()->search(
-            $this->getObjectManager(),
+            $this->getEntityManager(),
             'Algolia\AlgoliaSearchBundle\Tests\Entity\ProductForAlgoliaIntegrationTest',
             'My First Product'
         );
@@ -176,7 +177,7 @@ abstract class AlgoliaIntegrationTest extends BaseTest
             ->setDescription('Just watch https://www.youtube.com/watch?v=Y3n3c_8Nn2Y.')
             ->setRating(10);
 
-        $this->getIndexer()->discoverEntity($product, $this->getObjectManager());
+        $this->getIndexer()->discoverEntity($product, $this->getEntityManager());
 
         $this->assertEquals($this->getIndexer()->getPrimaryKeyForAlgolia($product)[0], $this->getIndexer()->serializePrimaryKey(array('shortDescription' => 'test')));
 
@@ -194,7 +195,7 @@ abstract class AlgoliaIntegrationTest extends BaseTest
             ->setDescription('Just watch https://www.youtube.com/watch?v=Y3n3c_8Nn2Y.')
             ->setRating(10);
 
-        $this->getIndexer()->discoverEntity($product, $this->getObjectManager());
+        $this->getIndexer()->discoverEntity($product, $this->getEntityManager());
 
         $this->assertEquals(
             $this->getIndexer()->getPrimaryKeyForAlgolia($product)[0],

@@ -4,12 +4,12 @@ namespace Algolia\AlgoliaSearchBundle\Mapping;
 
 class Index
 {
-    private $algoliaName;
-    private $perEnvironment = true;
-    private $autoIndex = true;
+    protected $algoliaName;
+    protected $perEnvironment = true;
+    protected $autoIndex = true;
 
     // The names of the settings only we care about (client side)
-    private static $internalSettingsProps = [
+    protected static $internalSettingsProps = [
         'algoliaName',
         'perEnvironment',
         'autoIndex'

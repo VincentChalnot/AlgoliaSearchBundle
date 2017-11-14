@@ -2,27 +2,22 @@
 
 namespace Algolia\AlgoliaSearchBundle\Indexer;
 
-use Doctrine\Common\Persistence\ObjectManager;
-use Doctrine\ODM\MongoDB\DocumentManager;
-use Doctrine\ORM\EntityManager;
 use Doctrine\ORM\Tools\Pagination\Paginator;
+use Doctrine\ORM\Query;
 
 use Algolia\AlgoliaSearchBundle\Exception\NotAnAlgoliaEntity;
 
 class ManualIndexer
 {
-    /** @var Indexer */
-    private $indexer;
+    protected $indexer;
+    protected $entityManager;
 
-    /** @var ObjectManager */
-    private $objectManager;
-
-    public function __construct(Indexer $indexer, ObjectManager $entityManager)
+    public function __construct(Indexer $indexer, $entityManager)
     {
         $this->indexer = $indexer;
-        $this->objectManager = $entityManager;
+        $this->entityManager = $entityManager;
 
-        $this->indexer->setObjectManager($entityManager);
+        $this->indexer->setEm($entityManager);
     }
 
     /**
@@ -31,10 +26,10 @@ class ManualIndexer
      * If $indexName is specified, it will override the name of the index
      * that the engine would normally pick.
      */
-    private function doIndex(array $entities, $indexName = null)
+    protected function doIndex(array $entities, $indexName = null)
     {
         foreach ($entities as $entity) {
-            if (!$this->indexer->discoverEntity($entity, $this->objectManager)) {
+            if (!$this->indexer->discoverEntity($entity, $this->entityManager)) {
                 throw new NotAnAlgoliaEntity(
                     'Tried to index entity of class `'.get_class($entity).'`, which is not recognized as an entity to index.'
                 );
@@ -53,10 +48,10 @@ class ManualIndexer
         $this->indexer->processScheduledIndexChanges();
     }
 
-    private function doUnIndex($entities)
+    protected function doUnIndex($entities)
     {
         foreach ($entities as $entity) {
-            if (!$this->indexer->discoverEntity($entity, $this->objectManager)) {
+            if (!$this->indexer->discoverEntity($entity, $this->entityManager)) {
                 throw new NotAnAlgoliaEntity(
                     'Tried to unIndex entity of class `'.get_class($entity).'`, which is not recognized as an entity to index.'
                 );
@@ -68,32 +63,46 @@ class ManualIndexer
         $this->indexer->processScheduledIndexChanges();
     }
 
-    private function batchArray(array $entities, $batchSize, $callback)
+    protected function batchArray(array $entities, $batchSize, $callback)
     {
         array_map($callback, array_chunk($entities, $batchSize));
 
         return count($entities);
     }
 
-    /**
-     * @param string $entityName
-     * @param mixed $query
-     * @param int $batchSize
-     * @param callable $callback
-     * @param bool $clearObjectManager
-     * @return int
-     */
-    private function batchQuery($entityName, $query, $batchSize, $callback, $clearObjectManager = false)
+    protected function batchQuery($entityName, $query, $batchSize, $callback, $clearEntityManager = false)
     {
-        if ($this->objectManager instanceof DocumentManager) {
-            $queryObject = new Query\ODM($this->objectManager, $entityName);
-            return $queryObject->batchQuery($batchSize, $callback, $query, $clearObjectManager);
-        } elseif ($this->objectManager instanceof EntityManager) {
-            $queryObject = new Query\ORM($this->objectManager, $entityName);
-            return $queryObject->batchQuery($batchSize, $callback, $query, $clearObjectManager);
-        } else {
-            throw new \LogicException('Cannot manually index with object manager of class ' . get_class($this->objectManager));
+        if (!$query) {
+            $query = $this->entityManager->createQueryBuilder()->select('e')->from($entityName, 'e')->getQuery();
         }
+
+        $nEntities = 0;
+
+        for ($page = 0;; $page += 1) {
+            $query
+            ->setFirstResult($batchSize * $page)
+            ->setMaxResults($batchSize);
+
+            $paginator = new Paginator($query);
+
+            $batch = [];
+            foreach ($paginator as $entity) {
+                $batch[] = $entity;
+            }
+
+            if (empty($batch)) {
+                break;
+            } else {
+                $nEntities += count($batch);
+                $callback($batch);
+            }
+
+            if ($clearEntityManager) {
+                $this->entityManager->clear();
+            }
+        }
+
+        return $nEntities;
     }
 
     /**
@@ -121,13 +130,19 @@ class ManualIndexer
 
         $options = array_merge($defaults, $options);
 
-        return $this->doBatch(
-            $entities,
-            $options,
-            function ($batch) use ($options) {
+        if (is_array($entities)) {
+            return $this->batchArray($entities, $options['batchSize'], function ($batch) use ($options) {
                 $this->doIndex($batch, $options['indexName']);
-            }
-        );
+            });
+        } elseif (is_string($entities)) {
+            return $this->batchQuery($entities, $options['query'], $options['batchSize'], function ($batch) use ($options) {
+                $this->doIndex($batch, $options['indexName']);
+            }, $options['clearEntityManager']);
+        } elseif (is_object($entities)) {
+            $this->doIndex([$entities], $options['indexName']);
+
+            return 1;
+        }
     }
 
     /**
@@ -154,20 +169,27 @@ class ManualIndexer
         ];
 
         $options = array_merge($defaults, $options);
-        return $this->doBatch(
-            $entities,
-            $options,
-            function ($batch) {
+
+        if (is_array($entities)) {
+            return $this->batchArray($entities, $options['batchSize'], function ($batch) {
                 $this->doUnIndex($batch);
-            }
-        );
+            });
+        } elseif (is_string($entities)) {
+            return $this->batchQuery($entities, $options['query'], $options['batchSize'], function ($batch) {
+                $this->doUnIndex($batch);
+            }, $options['clearEntityManager']);
+        } elseif (is_object($entities)) {
+            $this->doUnIndex([$entities]);
+
+            return 1;
+        }
     }
 
     public function clear($entityName)
     {
-        $className =  $this->objectManager->getRepository($entityName)->getClassName();
+        $className =  $this->entityManager->getRepository($entityName)->getClassName();
 
-        if (!$this->indexer->discoverEntity($className, $this->objectManager)) {
+        if (!$this->indexer->discoverEntity($className, $this->entityManager)) {
             throw new NotAnAlgoliaEntity(
                 'Tried to index entity of class `'.get_class($className).'`, which is not recognized as an entity to index.'
             );
@@ -204,9 +226,9 @@ class ManualIndexer
 
         $options = array_merge($defaults, $options);
 
-        $className =  $this->objectManager->getRepository($entityName)->getClassName();
+        $className =  $this->entityManager->getRepository($entityName)->getClassName();
 
-        if (!$this->indexer->discoverEntity($className, $this->objectManager)) {
+        if (!$this->indexer->discoverEntity($className, $this->entityManager)) {
             throw new NotAnAlgoliaEntity(
                 'Tried to index entity of class `'.$className.'`, which is not recognized as an entity to index.'
             );
@@ -245,27 +267,5 @@ class ManualIndexer
         }
 
         return $nProcessed;
-    }
-
-    /**
-     * @param array|object|string $entities
-     * @param array $options
-     * @param $callback
-     * @return int
-     *
-     * @throws \LogicException
-     */
-    private function doBatch($entities, array $options, $callback)
-    {
-        if (is_object($entities)) {
-            $callback([$entities]);
-            return 1;
-        } elseif (is_array($entities)) {
-            return $this->batchArray($entities, $options['batchSize'], $callback);
-        } elseif (! is_string($entities)) {
-            return 0;
-        }
-
-        return $this->batchQuery($entities, $options['query'], $options['batchSize'], $callback, $options['clearEntityManager']);
     }
 }

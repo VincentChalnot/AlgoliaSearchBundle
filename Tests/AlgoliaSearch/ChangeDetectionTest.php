@@ -1,12 +1,17 @@
 <?php
 
-namespace Algolia\AlgoliaSearchBundle\Tests\AlgoliaSearch;
+namespace Algolia\AlgoliaSearchBundle\Tests;
 
-use Algolia\AlgoliaSearchBundle\Tests\BaseTest;
-use Algolia\AlgoliaSearchBundle\Tests\Entity;
-
-abstract class ChangeDetectionTest extends BaseTest
+class ChangeDetectionTest extends BaseTest
 {
+    public static $neededEntityTypes = [
+        'Product',
+        'ProductWithIndexedMethod',
+        'ProductWithCompositePrimaryKey',
+        'ProductWithNoAlgoliaAnnotation',
+        'ProductWithCustomAttributeNames'
+    ];
+
     public function testNewProductWouldBeInserted()
     {
         $indexer = $this->getIndexer();
@@ -176,7 +181,7 @@ abstract class ChangeDetectionTest extends BaseTest
         $this->persistAndFlush($product);
 
         // convince ourselves that doctrine DOES delete the old product
-        $oldProduct = $this->getObjectManager()
+        $oldProduct = $this->getEntityManager()
         ->getRepository('AlgoliaSearchBundle:ProductWithCompositePrimaryKey')
         ->findOneBy(['name' => '.the .product', 'price' => 10]);
         $this->assertEquals(null, $oldProduct);

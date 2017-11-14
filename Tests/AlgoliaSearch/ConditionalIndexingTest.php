@@ -1,12 +1,13 @@
 <?php
 
-namespace Algolia\AlgoliaSearchBundle\Tests\AlgoliaSearch;
+namespace Algolia\AlgoliaSearchBundle\Tests;
 
-use Algolia\AlgoliaSearchBundle\Tests\BaseTest;
-use Algolia\AlgoliaSearchBundle\Tests\Entity;
-
-abstract class ConditionalIndexingTest extends BaseTest
+class ConditionalIndexingTest extends BaseTest
 {
+    public static $neededEntityTypes = [
+        'ProductWithConditionalIndexing'
+    ];
+
     public function beforeEach()
     {
         $this->getIndexer()->reset();

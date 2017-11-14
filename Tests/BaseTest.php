@@ -6,13 +6,14 @@ use Doctrine\ORM\Tools\SchemaTool;
 
 // Use lightweight test doubles that can inspect internal state
 use Algolia\AlgoliaSearchBundle\Tests\Indexer\Indexer;
-use PHPUnit\Framework\TestCase;
 
-class BaseTest extends TestCase
+class BaseTest extends \PHPUnit_Framework_TestCase
 {
     protected $backupGlobalsBlacklist = ['kernel'];
 
+    protected static $em = null;
     protected static $indexer = null;
+    protected static $neededEntityTypes = [];
 
     /**
      * When set to true, all tests will be ran locally,
@@ -22,8 +23,43 @@ class BaseTest extends TestCase
      */
     protected static $isolateFromAlgolia = true;
 
+    protected static function getNeededEntities()
+    {
+        $entities = array();
+        $namespace = 'Algolia\AlgoliaSearchBundle\Tests\\';
+        $base = 'Entity';
+        foreach (scandir(__DIR__.DIRECTORY_SEPARATOR.$base) as $entry) {
+            if ($entry === 'BaseTestAwareEntity.php') {
+                continue;
+            }
+
+            if (preg_match('/\.php$/', $entry)) {
+                if (!empty(static::$neededEntityTypes) && !in_array(basename($entry, '.php'), static::$neededEntityTypes)) {
+                    continue;
+                }
+
+                $entities[] = $namespace.$base.'\\'.basename($entry, '.php');
+            }
+        }
+
+        return $entities;
+    }
+
     protected static function setupDatabase()
     {
+        global $kernel;
+        $conn = $kernel->getContainer()->get('database_connection');
+        $dbname = $kernel->getContainer()->getParameter('database_name');
+        $em = $kernel->getContainer()->get('doctrine.orm.entity_manager');
+        $sm = $conn->getSchemaManager();
+
+        $schema = array_map(function ($class) use ($em) {
+            return $em->getClassMetadata($class);
+        }, static::getNeededEntities());
+
+        $schemaTool = new SchemaTool($em);
+        $schemaTool->dropSchema($schema);
+        $schemaTool->createSchema($schema);
     }
 
     public static function setupBeforeClass()
@@ -35,13 +71,16 @@ class BaseTest extends TestCase
     {
     }
 
-    public function getObjectManager()
+    public function getEntityManager()
     {
-        return static::staticGetObjectManager();
+        return self::staticGetEntityManager();
     }
 
-    public static function staticGetObjectManager()
+    public static function staticGetEntityManager()
     {
+        global $kernel;
+
+        return $kernel->getContainer()->get('doctrine.orm.entity_manager');
     }
 
     /**
@@ -49,7 +88,7 @@ class BaseTest extends TestCase
      */
     public function getIndexer()
     {
-        return static::staticGetIndexer();
+        return self::staticGetIndexer();
     }
 
     public static function staticGetIndexer()
@@ -61,16 +100,16 @@ class BaseTest extends TestCase
 
     public function persistAndFlush($entity)
     {
-        $this->getObjectManager()->persist($entity);
-        $this->getObjectManager()->flush();
+        $this->getEntityManager()->persist($entity);
+        $this->getEntityManager()->flush();
 
         return $this;
     }
 
     public function removeAndFlush($entity)
     {
-        $this->getObjectManager()->remove($entity);
-        $this->getObjectManager()->flush();
+        $this->getEntityManager()->remove($entity);
+        $this->getEntityManager()->flush();
 
         return $this;
     }
